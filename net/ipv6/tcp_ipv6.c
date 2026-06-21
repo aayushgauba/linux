@@ -71,6 +71,7 @@
 #include <crypto/utils.h>
 
 #include <trace/events/tcp.h>
+#include <trace/events/net.h>
 
 static void tcp_v6_send_reset(const struct sock *sk, struct sk_buff *skb,
 			      enum sk_rst_reason reason);
@@ -1707,6 +1708,69 @@ static void tcp_v6_fill_cb(struct sk_buff *skb, const struct ipv6hdr *hdr,
 			skb->tstamp || skb_hwtstamps(skb)->hwtstamp;
 }
 
+static bool net_tensor_tcp_fill_features(const struct sk_buff *skb,
+					 u32 features[8])
+{
+	unsigned int off;
+	u8 l4_proto = 0;
+	unsigned int l4_off = 0;
+
+	memset(features, 0, sizeof(u32) * 8);
+	if (!skb)
+		return false;
+
+	off = skb_network_offset(skb);
+
+	if (skb->protocol == htons(ETH_P_IP)) {
+		struct iphdr _iph, *iph;
+		unsigned int ihl;
+
+		iph = skb_header_pointer(skb, off, sizeof(_iph), &_iph);
+		if (!iph)
+			return false;
+		ihl = iph->ihl * 4u;
+		if (ihl < sizeof(*iph))
+			return false;
+
+		l4_proto = iph->protocol;
+		l4_off = off + ihl;
+		features[2] = iph->protocol;
+		features[3] = iph->ttl;
+		features[4] = ntohs(iph->tot_len);
+	} else if (skb->protocol == htons(ETH_P_IPV6)) {
+		struct ipv6hdr _ip6h, *ip6h;
+
+		ip6h = skb_header_pointer(skb, off, sizeof(_ip6h), &_ip6h);
+		if (!ip6h)
+			return false;
+
+		l4_proto = ip6h->nexthdr;
+		l4_off = off + sizeof(*ip6h);
+		features[2] = ip6h->nexthdr;
+		features[3] = ip6h->hop_limit;
+		features[4] = ntohs(ip6h->payload_len) + sizeof(*ip6h);
+	} else {
+		return false;
+	}
+
+	if (l4_proto != IPPROTO_TCP)
+		return false;
+
+	{
+		struct tcphdr _tcph, *tcph;
+
+		tcph = skb_header_pointer(skb, l4_off, sizeof(_tcph), &_tcph);
+		if (!tcph)
+			return false;
+		features[0] = ntohs(tcph->source);
+		features[1] = ntohs(tcph->dest);
+		features[5] = tcph->syn ? 1 : 0;
+		features[6] = tcph->ack ? 1 : 0;
+	}
+
+	return true;
+}
+
 INDIRECT_CALLABLE_SCOPE int tcp_v6_rcv(struct sk_buff *skb)
 {
 	struct net *net = dev_net_rcu(skb->dev);
@@ -1747,6 +1811,13 @@ INDIRECT_CALLABLE_SCOPE int tcp_v6_rcv(struct sk_buff *skb)
 
 	th = (const struct tcphdr *)skb->data;
 	hdr = ipv6_hdr(skb);
+
+	if (trace_net_tensor_tcp_enabled()) {
+		u32 features[8];
+
+		if (net_tensor_tcp_fill_features(skb, features))
+			trace_net_tensor_tcp(skb, features);
+	}
 
 lookup:
 	sk = __inet6_lookup_skb(skb, __tcp_hdrlen(th),

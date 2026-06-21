@@ -1,0 +1,334 @@
+Tensor-native shared-memory sample
+=================================
+
+Kernel tensor subsystem
+-----------------------
+
+Native tensor objects are implemented as a kernel subsystem under
+`kernel/tensor/`, selected with `CONFIG_TENSOR_SUBSYSTEM`. The
+`CONFIG_TENSOR_NATIVE` module provides `/dev/tensor_native`, fd-backed object
+lifecycle, validated layouts, mmap, synchronization, DMA-BUF interchange,
+kernel mappings, resource accounting, and tracepoints. Networking remains a
+sample consumer of this common subsystem rather than owning tensor objects.
+
+Native allocations are charged to both the creator UID and its default cgroup.
+The `uid_limit_bytes` and `cgroup_limit_bytes` module parameters enforce hard
+limits, while `/proc/tensor_native_accounting` reports total and scoped usage.
+Run the quota test after loading the core module:
+
+	sudo samples/tensor_native/test_accounting.sh
+
+This sample demonstrates a zero-copy tensor handoff between processes:
+
+producer -> shared memory tensor object -> consumer
+
+Build:
+
+	make -C samples/tensor_native
+
+Run in two terminals:
+
+	./samples/tensor_native/producer /tensor0 64 64
+	./samples/tensor_native/consumer /tensor0
+
+Cleanup:
+
+	rm -f /dev/shm/tensor0
+
+Notes:
+- Data path is mmap-based (no serialization/parsing of tensor payload).
+- Kernel and SHM paths share `include/uapi/linux/tensor_native.h` for the
+  shape/dtype/strides/version contract.
+- SHM transport state (`seq` and `ready`) follows the common tensor header.
+- Consumers validate metadata, layout extents, and mapped-buffer bounds.
+- A lightweight seq/ready handshake provides consistency.
+
+Validate the shared-memory ABI and bounds checks:
+
+	make -C samples/tensor_native check
+
+Kernel-managed tensor objects
+-----------------------------
+
+Enable `CONFIG_TENSOR_NATIVE`, build and load the kernel or module, then run:
+
+	make -C samples/tensor_native tensor_object_test
+	sudo insmod samples/tensor_native/tensor_native-wsl-6.6.87.2.ko
+	sudo insmod samples/tensor_native/tensor_kernel_consumer.ko
+	sudo ./samples/tensor_native/tensor_object_test
+	sudo rmmod tensor_kernel_consumer tensor_native
+
+The test creates a validated anonymous tensor fd through
+`/dev/tensor_native`, maps its payload, clones a storage-sharing view, exports
+the storage as a DMA-BUF, and imports that DMA-BUF as another tensor object.
+It also passes a tensor fd to a child process with `SCM_RIGHTS` and validates
+shared data and generation signaling across the process boundary.
+
+The `tensor_kernel_consumer` sample module accepts that same fd through an
+ioctl, resolves it with the exported kernel tensor API, maps the payload with
+DMA synchronization, reads a value, and signals a new generation.
+
+Native Netfilter tensor producer
+--------------------------------
+
+`tensor_net_producer.ko` hooks IPv4 `PRE_ROUTING` only in the network namespace
+of the process issuing `TENSOR_NET_BIND` and writes packet features directly
+into a contiguous
+`u32[slots,batch,8]` tensor. Each full slot gets its own sequence and signals
+the tensor fd. Networking fills later slots while userspace processes earlier
+ones. Captures are dropped only when the producer reaches an unacknowledged
+slot; packets themselves continue normally.
+
+Bindings can select an ingress interface, IP protocol, source port, and
+destination port. Zero leaves a field unfiltered. Producer state, tensor
+handles, queues, hooks, filters, and statistics are independently allocated
+for every network namespace.
+
+Each namespace exposes a read-only `/proc/net/tensor_net_producer` snapshot.
+It reports bind and verdict mode, ring positions, active filters, pending
+packets, capture totals, verdict totals, and timeout totals. Reading through
+`ip netns exec` selects that namespace's producer state:
+
+	ip netns exec <name> cat /proc/net/tensor_net_producer
+
+The `TENSOR_NET` Generic Netlink family provides namespace-aware `BIND`,
+`UNBIND`, and `GET_STATS` control operations. The `events` multicast group
+publishes completed-batch and packet-timeout notifications. Tensor dequeue and
+acknowledgement remain ioctls because they are latency-sensitive data-plane
+operations. Existing ioctl bind and stats commands remain supported.
+
+Query the current namespace through the dependency-free sample client:
+
+	sudo samples/tensor_native/tensor_net_ctl stats
+	sudo samples/tensor_native/tensor_net_ctl unbind
+
+The family and multicast group can be inspected with iproute2:
+
+	genl ctrl list | grep -A8 TENSOR_NET
+
+Set `TENSOR_NET_CONTROL=genl` to make `tensor_net_capture` perform bind,
+statistics, and unbind through Generic Netlink. Dequeue and acknowledgement
+continue through the data-plane ioctl interface:
+
+	sudo env TENSOR_NET_CONTROL=genl \
+		samples/tensor_native/tensor_net_capture 64 4 20 verdict
+
+The dual-namespace test runs its left producer through Generic Netlink and its
+right producer through compatibility ioctls.
+
+Run two concurrent isolated namespace producers with different ring layouts:
+
+	sudo samples/tensor_native/test_netns.sh
+
+Namespace teardown cancels timeout work, unregisters the namespace hook, and
+reinjects every queued packet fail-open before releasing tensor handles.
+
+Tensor tracepoints
+------------------
+
+The `tensor_native` trace system reports object creation and release, sequence
+signals, queued packets, completed batches, verdicts, and enforcement
+timeouts. Events include object or storage identity, network namespace inode,
+packet ID, ring position, verdict source, and sequence where applicable.
+
+Run the tracefs validation harness after loading both modules:
+
+	sudo samples/tensor_native/test_trace.sh
+
+For continuous inspection, enable the event system and read `trace_pipe`:
+
+	echo 1 | sudo tee /sys/kernel/tracing/events/tensor_native/enable
+	sudo cat /sys/kernel/tracing/trace_pipe
+
+Load the modules and run the loopback traffic harness:
+
+	sudo insmod samples/tensor_native/tensor_native-wsl-6.6.87.2.ko
+	sudo insmod samples/tensor_native/tensor_net_producer.ko
+	sudo samples/tensor_native/tensor_net_capture 256 4 100
+	sudo rmmod tensor_net_producer tensor_native
+
+The harness generates loopback UDP traffic, validates each signaled tensor
+batch, acknowledges it, and reports packets per second.
+
+Tensor verdict enforcement
+--------------------------
+
+Binding an additional contiguous `u8[slots,batch]` verdict tensor enables
+bounded asynchronous enforcement. Feature column 7 contains a nonzero packet
+ID. The producer owns at most 4096 queued packets, and `TENSOR_NET_ACK` applies
+the corresponding verdict slot (`0` accepts, `1` drops) before reinjecting the
+packets after the Tensor Netfilter hook.
+
+The queue fails open: packets are accepted when allocation fails, when a
+decision exceeds the configured timeout, or when the tensors are unbound.
+Timeout, accepted, and verdict-drop counts are exposed through
+`TENSOR_NET_GET_STATS`.
+
+Run the enforcement test, which drops alternating loopback packet IDs:
+
+	sudo samples/tensor_native/tensor_net_capture 128 4 100 verdict
+
+Netfilter sidecar simulation
+----------------------------
+
+This is the first network subsystem slice:
+
+packet feature tensor -> policy sidecar -> verdict tensor
+
+`nf_packet_producer` now builds raw IPv4/TCP packet bytes and runs a
+`packet bytes -> tensor row` adapter before publishing to shared memory.
+
+Build:
+
+	make -C samples/tensor_native
+
+Run in two terminals:
+
+	./samples/tensor_native/nf_policy_consumer /pkt0 /verdict0
+	./samples/tensor_native/nf_packet_producer /pkt0 /verdict0 1024
+
+Persistent mode (for accurate perf):
+
+	./samples/tensor_native/nf_policy_consumer /pkt0 /verdict0 200
+	./samples/tensor_native/nf_packet_producer /pkt0 /verdict0 1024 200
+
+Benchmark:
+
+	./samples/tensor_native/bench_persistent.sh
+
+Byte-path baseline and comparison
+---------------------------------
+
+Baseline run (packet bytes parsed in consumer):
+
+	./samples/tensor_native/nf_bytes_consumer /pkt0 /verdict0 200
+	./samples/tensor_native/nf_bytes_producer /pkt0 /verdict0 1024 200
+
+Tensor vs bytes benchmark:
+
+	./samples/tensor_native/bench_compare.sh
+
+Live NFQUEUE ingress (optional)
+-------------------------------
+
+Build (requires `libnetfilter_queue` dev package):
+
+	make -C samples/tensor_native nfq_tensor_verdict
+
+Example traffic hook (IPv4 TCP ingress to NFQUEUE 0):
+
+	sudo iptables -I INPUT -p tcp -j NFQUEUE --queue-num 0
+
+Run verdict bridge:
+
+	./samples/tensor_native/nf_policy_consumer /pkt0 /verdict0 0
+	sudo ./samples/tensor_native/nfq_tensor_verdict 0 /pkt0 /verdict0
+
+Cleanup iptables rule:
+
+	sudo iptables -D INPUT -p tcp -j NFQUEUE --queue-num 0
+
+Expected output:
+- nfqueue bridge prints accepted/dropped counts
+- consumer runs until interrupted
+
+Cleanup:
+
+	rm -f /dev/shm/pkt0 /dev/shm/verdict0
+
+Tensor-native layer design
+--------------------------
+
+Current state in this sample:
+- Data plane uses POSIX SHM + mmap with a stable tensor header.
+- Producers/consumers agree on tensor metadata (`shape`, `dtype`, `stride_bytes`).
+- Synchronization uses a simple `seq`/`ready` handshake.
+- NFQUEUE can emit the same tensor metadata ABI with a fixed packet-feature
+  tensor payload.
+- `CONFIG_TENSOR_NATIVE` provides fd-backed, kernel-managed tensor objects.
+- Object payloads are mapped with `mmap`; generation changes use ioctl wait,
+  signal, and poll instead of userspace spin loops.
+
+Remaining target state:
+- Programs exchange tensor handles instead of byte blobs.
+- Subsystems (network, IO, ML sidecars) attach to the same tensor object.
+
+Object model
+------------
+
+Each tensor object has:
+- identity: anonymous fd ownership and fd-passing semantics.
+- layout: ndim, dtype, shape, stride_bytes, data_offset, data_bytes.
+- storage: refcounted vmalloc pages or an imported DMA-BUF.
+- sync state: sequence counter, wait queue, and poll readiness.
+- lifetime: refcounted object; memory released when last ref is dropped.
+
+Minimal ABI direction
+---------------------
+
+The control fd (`/dev/tensor_native`) implements:
+- `TENSOR_CREATE`: create object with validated metadata and size.
+- `TENSOR_IMPORT_DMABUF`: wrap a DMA-BUF in validated tensor metadata.
+
+Tensor object fds implement:
+- `TENSOR_GET_INFO`: fetch immutable metadata and current sync state.
+- `TENSOR_SIGNAL`: publish a completed write generation.
+- `TENSOR_WAIT`: block/poll for next generation (or timeout).
+- `TENSOR_CLONE_VIEW`: create a shape/stride view without copying storage.
+- `TENSOR_EXPORT_DMABUF`: expose vmalloc-backed storage to DMA-BUF consumers.
+- `TENSOR_BEGIN_ACCESS` / `TENSOR_END_ACCESS`: bracket CPU access and wait for
+  implicit DMA-BUF reservation fences while applying exporter cache handling.
+
+Kernel consumers use `tensor_native_get()`, `tensor_native_map()`,
+`tensor_native_unmap()`, and `tensor_native_signal()` from
+`include/linux/tensor_native.h`.
+
+Data movement:
+- `mmap(object_fd)` maps tensor payload directly.
+- Metadata is retrieved with `TENSOR_GET_INFO`.
+- Mappings are page-granular. A sub-page view reports its payload start in
+  `data_offset`; callers must access only the declared payload range.
+
+Concurrency semantics
+---------------------
+
+Current first contract:
+- Writers publish strictly increasing generation numbers.
+- One or more readers can wait or poll for a later generation.
+- Writer protocol: write payload -> release store on `seq` publish.
+- Reader protocol: acquire load `seq` -> read payload -> optional recheck `seq`.
+- If `seq` changes during read, reader retries (seqlock-like).
+
+This preserves zero-copy while avoiding coarse locks for steady-state inference.
+
+Security and isolation
+----------------------
+
+- The control device defaults to mode `0600`.
+- Object access is controlled by fd ownership and explicit fd passing.
+- Objects are limited to 64 MiB and total live storage to 256 MiB.
+- Namespace, cgroup, and LSM policy integration remains future work.
+
+Networking integration path
+---------------------------
+
+Phase 1 (already prototyped):
+- NFQUEUE copies packet payload to userspace and adapter emits feature tensor row.
+
+Phase 2:
+- NFQUEUE/NAPI path emits tensor descriptor sidecar plus shared payload handle.
+- Userspace policy engine reads tensor directly and returns verdict tensor handle.
+
+Phase 3:
+- In-kernel policy path consumes same tensor format for hot-path decisions.
+- Userspace remains control/training plane, kernel uses cached model artifacts.
+
+Milestones
+----------
+
+1. Done: fd-based object creation and mmap.
+2. Done: `TENSOR_WAIT`, `TENSOR_SIGNAL`, and poll synchronization.
+3. Done: shared metadata ABI and validation.
+4. Convert networking paths from copied Netlink tensors to object fds.
+5. Add view/subtensor support for batched pipelines without copies.
+6. Add namespace/cgroup accounting, LSM hooks, and pressure metrics.

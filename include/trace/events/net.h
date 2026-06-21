@@ -9,6 +9,7 @@
 #include <linux/netdevice.h>
 #include <linux/if_vlan.h>
 #include <linux/ip.h>
+#include <linux/string.h>
 #include <linux/tracepoint.h>
 #include <net/busy_poll.h>
 
@@ -257,6 +258,200 @@ DEFINE_EVENT(net_dev_rx_verbose_template, napi_gro_receive_entry,
 	TP_PROTO(const struct sk_buff *skb),
 
 	TP_ARGS(skb)
+);
+
+TRACE_EVENT(net_tensor_rx,
+
+	TP_PROTO(const struct sk_buff *skb, const u32 *features),
+
+	TP_ARGS(skb, features),
+
+	TP_STRUCT__entry(
+		__string(	name,			skb->dev->name	)
+		__field(	const void *,		skbaddr		)
+		__array(	u32,			features,		8	)
+		__field(	u16,			protocol	)
+		__field(	unsigned int,		len		)
+		__field(	u64,			net_cookie	)
+	),
+
+	TP_fast_assign(
+		__assign_str(name);
+		__entry->skbaddr = skb;
+		memcpy(__entry->features, features, sizeof(__entry->features));
+		__entry->protocol = ntohs(skb->protocol);
+		__entry->len = skb->len;
+		__entry->net_cookie = dev_net(skb->dev)->net_cookie;
+	),
+
+	TP_printk("dev=%s skbaddr=%p protocol=0x%04x len=%u net_cookie=%llu features=[%u,%u,%u,%u,%u,%u,%u,%u]",
+		  __get_str(name), __entry->skbaddr, __entry->protocol,
+		  __entry->len, __entry->net_cookie,
+		  __entry->features[0], __entry->features[1], __entry->features[2],
+		  __entry->features[3], __entry->features[4], __entry->features[5],
+		  __entry->features[6], __entry->features[7])
+);
+
+TRACE_EVENT(net_tensor_tx,
+
+	TP_PROTO(const struct sk_buff *skb, const u32 *features),
+
+	TP_ARGS(skb, features),
+
+	TP_STRUCT__entry(
+		__string(	name,			skb->dev->name	)
+		__field(	const void *,		skbaddr		)
+		__array(	u32,			features,		8	)
+		__field(	u16,			protocol	)
+		__field(	unsigned int,		len		)
+		__field(	u64,			net_cookie	)
+	),
+
+	TP_fast_assign(
+		__assign_str(name);
+		__entry->skbaddr = skb;
+		memcpy(__entry->features, features, sizeof(__entry->features));
+		__entry->protocol = ntohs(skb->protocol);
+		__entry->len = skb->len;
+		__entry->net_cookie = dev_net(skb->dev)->net_cookie;
+	),
+
+	TP_printk("dev=%s skbaddr=%p protocol=0x%04x len=%u net_cookie=%llu features=[%u,%u,%u,%u,%u,%u,%u,%u]",
+		  __get_str(name), __entry->skbaddr, __entry->protocol,
+		  __entry->len, __entry->net_cookie,
+		  __entry->features[0], __entry->features[1], __entry->features[2],
+		  __entry->features[3], __entry->features[4], __entry->features[5],
+		  __entry->features[6], __entry->features[7])
+);
+
+TRACE_EVENT(net_tensor_nf,
+
+	TP_PROTO(const struct sk_buff *skb, const u32 *features),
+
+	TP_ARGS(skb, features),
+
+	TP_STRUCT__entry(
+		__string(	name,			skb->dev->name	)
+		__field(	const void *,		skbaddr		)
+		__array(	u32,			features,		8	)
+		__field(	u16,			protocol	)
+		__field(	unsigned int,		len		)
+		__field(	u64,			net_cookie	)
+	),
+
+	TP_fast_assign(
+		__assign_str(name);
+		__entry->skbaddr = skb;
+		memcpy(__entry->features, features, sizeof(__entry->features));
+		__entry->protocol = ntohs(skb->protocol);
+		__entry->len = skb->len;
+		__entry->net_cookie = dev_net(skb->dev)->net_cookie;
+	),
+
+	TP_printk("dev=%s skbaddr=%p protocol=0x%04x len=%u net_cookie=%llu features=[%u,%u,%u,%u,%u,%u,%u,%u]",
+		  __get_str(name), __entry->skbaddr, __entry->protocol,
+		  __entry->len, __entry->net_cookie,
+		  __entry->features[0], __entry->features[1], __entry->features[2],
+		  __entry->features[3], __entry->features[4], __entry->features[5],
+		  __entry->features[6], __entry->features[7])
+);
+
+TRACE_EVENT(net_tensor_tcp,
+
+	TP_PROTO(const struct sk_buff *skb, const u32 *features),
+
+	TP_ARGS(skb, features),
+
+	TP_STRUCT__entry(
+		__string(	name,			skb->dev->name	)
+		__field(	const void *,		skbaddr		)
+		__array(	u32,			features,		8	)
+		__field(	u16,			protocol	)
+		__field(	unsigned int,		len		)
+		__field(	u64,			net_cookie	)
+	),
+
+	TP_fast_assign(
+		__assign_str(name);
+		__entry->skbaddr = skb;
+		memcpy(__entry->features, features, sizeof(__entry->features));
+		__entry->protocol = ntohs(skb->protocol);
+		__entry->len = skb->len;
+		__entry->net_cookie = dev_net(skb->dev)->net_cookie;
+	),
+
+	TP_printk("dev=%s skbaddr=%p protocol=0x%04x len=%u net_cookie=%llu features=[%u,%u,%u,%u,%u,%u,%u,%u]",
+		  __get_str(name), __entry->skbaddr, __entry->protocol,
+		  __entry->len, __entry->net_cookie,
+		  __entry->features[0], __entry->features[1], __entry->features[2],
+		  __entry->features[3], __entry->features[4], __entry->features[5],
+		  __entry->features[6], __entry->features[7])
+);
+
+TRACE_EVENT(net_tensor_udp,
+
+	TP_PROTO(const struct sk_buff *skb, const u32 *features),
+
+	TP_ARGS(skb, features),
+
+	TP_STRUCT__entry(
+		__string(	name,			skb->dev->name	)
+		__field(	const void *,		skbaddr		)
+		__array(	u32,			features,		8	)
+		__field(	u16,			protocol	)
+		__field(	unsigned int,		len		)
+		__field(	u64,			net_cookie	)
+	),
+
+	TP_fast_assign(
+		__assign_str(name);
+		__entry->skbaddr = skb;
+		memcpy(__entry->features, features, sizeof(__entry->features));
+		__entry->protocol = ntohs(skb->protocol);
+		__entry->len = skb->len;
+		__entry->net_cookie = dev_net(skb->dev)->net_cookie;
+	),
+
+	TP_printk("dev=%s skbaddr=%p protocol=0x%04x len=%u net_cookie=%llu features=[%u,%u,%u,%u,%u,%u,%u,%u]",
+		  __get_str(name), __entry->skbaddr, __entry->protocol,
+		  __entry->len, __entry->net_cookie,
+		  __entry->features[0], __entry->features[1], __entry->features[2],
+		  __entry->features[3], __entry->features[4], __entry->features[5],
+		  __entry->features[6], __entry->features[7])
+);
+
+TRACE_EVENT(net_tensor_ct,
+
+	TP_PROTO(const struct sk_buff *skb, const u32 *features, u8 ctinfo),
+
+	TP_ARGS(skb, features, ctinfo),
+
+	TP_STRUCT__entry(
+		__string(	name,			skb->dev->name	)
+		__field(	const void *,		skbaddr		)
+		__array(	u32,			features,		8	)
+		__field(	u8,			ctinfo		)
+		__field(	u16,			protocol	)
+		__field(	unsigned int,		len		)
+		__field(	u64,			net_cookie	)
+	),
+
+	TP_fast_assign(
+		__assign_str(name);
+		__entry->skbaddr = skb;
+		memcpy(__entry->features, features, sizeof(__entry->features));
+		__entry->ctinfo = ctinfo;
+		__entry->protocol = ntohs(skb->protocol);
+		__entry->len = skb->len;
+		__entry->net_cookie = dev_net(skb->dev)->net_cookie;
+	),
+
+	TP_printk("dev=%s skbaddr=%p protocol=0x%04x len=%u ctinfo=%u net_cookie=%llu features=[%u,%u,%u,%u,%u,%u,%u,%u]",
+		  __get_str(name), __entry->skbaddr, __entry->protocol,
+		  __entry->len, __entry->ctinfo, __entry->net_cookie,
+		  __entry->features[0], __entry->features[1], __entry->features[2],
+		  __entry->features[3], __entry->features[4], __entry->features[5],
+		  __entry->features[6], __entry->features[7])
 );
 
 DEFINE_EVENT(net_dev_rx_verbose_template, netif_receive_skb_entry,

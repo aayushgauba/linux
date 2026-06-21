@@ -113,6 +113,7 @@
 #include <linux/static_key.h>
 #include <linux/btf_ids.h>
 #include <trace/events/skb.h>
+#include <trace/events/net.h>
 #include <net/busy_poll.h>
 #include <net/sock_reuseport.h>
 #include <net/addrconf.h>
@@ -129,6 +130,67 @@ EXPORT_PER_CPU_SYMBOL_GPL(udp_memory_per_cpu_fw_alloc);
 
 #define MAX_UDP_PORTS 65536
 #define PORTS_PER_CHAIN (MAX_UDP_PORTS / UDP_HTABLE_SIZE_MIN_PERNET)
+
+static bool net_tensor_udp_fill_features(const struct sk_buff *skb,
+					 u32 features[8])
+{
+	unsigned int off;
+	u8 l4_proto = 0;
+	unsigned int l4_off = 0;
+
+	memset(features, 0, sizeof(u32) * 8);
+	if (!skb)
+		return false;
+
+	off = skb_network_offset(skb);
+
+	if (skb->protocol == htons(ETH_P_IP)) {
+		struct iphdr _iph, *iph;
+		unsigned int ihl;
+
+		iph = skb_header_pointer(skb, off, sizeof(_iph), &_iph);
+		if (!iph)
+			return false;
+		ihl = iph->ihl * 4u;
+		if (ihl < sizeof(*iph))
+			return false;
+
+		l4_proto = iph->protocol;
+		l4_off = off + ihl;
+		features[2] = iph->protocol;
+		features[3] = iph->ttl;
+		features[4] = ntohs(iph->tot_len);
+	} else if (skb->protocol == htons(ETH_P_IPV6)) {
+		struct ipv6hdr _ip6h, *ip6h;
+
+		ip6h = skb_header_pointer(skb, off, sizeof(_ip6h), &_ip6h);
+		if (!ip6h)
+			return false;
+
+		l4_proto = ip6h->nexthdr;
+		l4_off = off + sizeof(*ip6h);
+		features[2] = ip6h->nexthdr;
+		features[3] = ip6h->hop_limit;
+		features[4] = ntohs(ip6h->payload_len) + sizeof(*ip6h);
+	} else {
+		return false;
+	}
+
+	if (l4_proto != IPPROTO_UDP)
+		return false;
+
+	{
+		struct udphdr _udph, *udph;
+
+		udph = skb_header_pointer(skb, l4_off, sizeof(_udph), &_udph);
+		if (!udph)
+			return false;
+		features[0] = ntohs(udph->source);
+		features[1] = ntohs(udph->dest);
+	}
+
+	return true;
+}
 
 static int udp_lib_lport_inuse(struct net *net, __u16 num,
 			       const struct udp_hslot *hslot,
@@ -1109,6 +1171,13 @@ static int udp_send_skb(struct sk_buff *skb, struct flowi4 *fl4,
 	uh->dest = fl4->fl4_dport;
 	uh->len = htons(len);
 	uh->check = 0;
+
+	if (trace_net_tensor_udp_enabled()) {
+		u32 features[8];
+
+		if (net_tensor_udp_fill_features(skb, features))
+			trace_net_tensor_udp(skb, features);
+	}
 
 	if (cork->gso_size) {
 		const int hlen = skb_network_header_len(skb) +
@@ -2600,6 +2669,13 @@ int udp_rcv(struct sk_buff *skb)
 	ulen = ntohs(uh->len);
 	saddr = ip_hdr(skb)->saddr;
 	daddr = ip_hdr(skb)->daddr;
+
+	if (trace_net_tensor_udp_enabled()) {
+		u32 features[8];
+
+		if (net_tensor_udp_fill_features(skb, features))
+			trace_net_tensor_udp(skb, features);
+	}
 
 	if (ulen > skb->len)
 		goto short_packet;

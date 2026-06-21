@@ -51,6 +51,70 @@
 #include <linux/skbuff_ref.h>
 
 #include <trace/events/tcp.h>
+#include <trace/events/net.h>
+
+static bool net_tensor_tcp_fill_features(const struct sk_buff *skb,
+					 u32 features[8])
+{
+	unsigned int off;
+	u8 l4_proto = 0;
+	unsigned int l4_off = 0;
+
+	memset(features, 0, sizeof(u32) * 8);
+	if (!skb)
+		return false;
+
+	off = skb_network_offset(skb);
+
+	if (skb->protocol == htons(ETH_P_IP)) {
+		struct iphdr _iph, *iph;
+		unsigned int ihl;
+
+		iph = skb_header_pointer(skb, off, sizeof(_iph), &_iph);
+		if (!iph)
+			return false;
+		ihl = iph->ihl * 4u;
+		if (ihl < sizeof(*iph))
+			return false;
+
+		l4_proto = iph->protocol;
+		l4_off = off + ihl;
+		features[2] = iph->protocol;
+		features[3] = iph->ttl;
+		features[4] = ntohs(iph->tot_len);
+	} else if (skb->protocol == htons(ETH_P_IPV6)) {
+		struct ipv6hdr _ip6h, *ip6h;
+
+		ip6h = skb_header_pointer(skb, off, sizeof(_ip6h), &_ip6h);
+		if (!ip6h)
+			return false;
+
+		l4_proto = ip6h->nexthdr;
+		l4_off = off + sizeof(*ip6h);
+		features[2] = ip6h->nexthdr;
+		features[3] = ip6h->hop_limit;
+		features[4] = ntohs(ip6h->payload_len) + sizeof(*ip6h);
+	} else {
+		return false;
+	}
+
+	if (l4_proto != IPPROTO_TCP)
+		return false;
+
+	{
+		struct tcphdr _tcph, *tcph;
+
+		tcph = skb_header_pointer(skb, l4_off, sizeof(_tcph), &_tcph);
+		if (!tcph)
+			return false;
+		features[0] = ntohs(tcph->source);
+		features[1] = ntohs(tcph->dest);
+		features[5] = tcph->syn ? 1 : 0;
+		features[6] = tcph->ack ? 1 : 0;
+	}
+
+	return true;
+}
 
 /* Refresh clocks of a TCP socket,
  * ensuring monotically increasing values.
@@ -1730,6 +1794,13 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 			    gfp_t gfp_mask)
 {
+	if (trace_net_tensor_tcp_enabled()) {
+		u32 features[8];
+
+		if (net_tensor_tcp_fill_features(skb, features))
+			trace_net_tensor_tcp(skb, features);
+	}
+
 	return __tcp_transmit_skb(sk, skb, clone_it, gfp_mask,
 				  tcp_sk(sk)->rcv_nxt);
 }

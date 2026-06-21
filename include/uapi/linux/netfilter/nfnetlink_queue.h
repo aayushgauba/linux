@@ -4,6 +4,7 @@
 
 #include <linux/types.h>
 #include <linux/netfilter/nfnetlink.h>
+#include <linux/tensor_native.h>
 
 enum nfqnl_msg_types {
 	NFQNL_MSG_PACKET,		/* packet from kernel to userspace */
@@ -63,6 +64,7 @@ enum nfqnl_attr_type {
 	NFQA_L2HDR,			/* full L2 header */
 	NFQA_PRIORITY,			/* skb->priority */
 	NFQA_CGROUP_CLASSID,		/* __u32 cgroup classid */
+	NFQA_TENSOR,			/* nfqnl_msg_tensor_payload */
 
 	__NFQA_MAX
 };
@@ -92,13 +94,13 @@ enum nfqnl_config_mode {
 	NFQNL_COPY_NONE,
 	NFQNL_COPY_META,
 	NFQNL_COPY_PACKET,
+	NFQNL_COPY_TENSOR,
 };
 
 struct nfqnl_msg_config_params {
 	__be32		copy_range;
 	__u8	copy_mode;	/* enum nfqnl_config_mode */
 } __attribute__ ((packed));
-
 
 enum nfqnl_attr_config {
 	NFQA_CFG_UNSPEC,

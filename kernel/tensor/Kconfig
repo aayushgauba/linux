@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+menuconfig TENSOR_SUBSYSTEM
+	bool "Tensor object subsystem"
+	help
+	  Enable first-class, file-descriptor-backed tensor objects for sharing
+	  validated multidimensional memory between userspace, kernel subsystems,
+	  and DMA-capable devices. This provides common tensor object lifecycle,
+	  synchronization, mapping, accounting, and tracing infrastructure.
+
+if TENSOR_SUBSYSTEM
+
+config TENSOR_NATIVE
+	tristate "Native tensor objects"
+	depends on MMU
+	select DMA_SHARED_BUFFER
+	help
+	  Create validated, mmap-able tensor objects through /dev/tensor_native.
+	  Each tensor is represented by an anonymous file descriptor and exposes
+	  sequence-based signal, wait, poll, DMA-BUF, and kernel mapping APIs.
+
+	  If built as a module, the module will be called tensor_native.
+
+endif

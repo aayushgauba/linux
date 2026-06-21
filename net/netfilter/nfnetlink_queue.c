@@ -32,6 +32,10 @@
 #include <linux/cgroup-defs.h>
 #include <linux/rhashtable.h>
 #include <linux/jhash.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/tensor_native.h>
+#include <linux/tcp.h>
 #include <net/gso.h>
 #include <net/sock.h>
 #include <net/tcp_states.h>
@@ -59,6 +63,19 @@
  * attribute to detect truncation.
  */
 #define NFQNL_MAX_COPY_RANGE (0xffff - NLA_HDRLEN)
+
+#define NFQNL_TENSOR_FEATURES 8u
+
+enum nfqnl_tensor_feature_index {
+	NFQNL_F_SRC_PORT = 0,
+	NFQNL_F_DST_PORT = 1,
+	NFQNL_F_PROTOCOL = 2,
+	NFQNL_F_TTL = 3,
+	NFQNL_F_LENGTH = 4,
+	NFQNL_F_TCP_SYN = 5,
+	NFQNL_F_TCP_ACK = 6,
+	NFQNL_F_RESERVED = 7,
+};
 
 struct nfqnl_instance {
 	struct hlist_node hlist;		/* global list of queues */
@@ -636,6 +653,63 @@ static int nf_queue_checksum_help(struct sk_buff *entskb)
 	return skb_checksum_help(entskb);
 }
 
+struct nfqnl_tensor_payload {
+	struct tensor_native_hdr hdr;
+	__u32 data[NFQNL_TENSOR_FEATURES];
+};
+
+static void nfqnl_tensor_fill(const struct sk_buff *skb,
+			      __u32 data[NFQNL_TENSOR_FEATURES])
+{
+	struct iphdr _iph, *iph;
+	unsigned int off;
+
+	memset(data, 0, sizeof(__u32) * NFQNL_TENSOR_FEATURES);
+
+	if (skb->protocol != htons(ETH_P_IP))
+		return;
+
+	off = skb_network_offset(skb);
+	iph = skb_header_pointer(skb, off, sizeof(_iph), &_iph);
+	if (!iph)
+		return;
+
+	data[NFQNL_F_PROTOCOL] = iph->protocol;
+	data[NFQNL_F_TTL] = iph->ttl;
+	data[NFQNL_F_LENGTH] = ntohs(iph->tot_len);
+
+	if (iph->protocol == IPPROTO_TCP) {
+		struct tcphdr _tcph, *tcph;
+		unsigned int thlen = iph->ihl * 4u;
+
+		if (thlen < sizeof(*iph))
+			return;
+
+		tcph = skb_header_pointer(skb, off + thlen, sizeof(_tcph), &_tcph);
+		if (!tcph)
+			return;
+
+		data[NFQNL_F_SRC_PORT] = ntohs(tcph->source);
+		data[NFQNL_F_DST_PORT] = ntohs(tcph->dest);
+		data[NFQNL_F_TCP_SYN] = tcph->syn ? 1 : 0;
+		data[NFQNL_F_TCP_ACK] = tcph->ack ? 1 : 0;
+	}
+}
+
+static int nfqnl_put_tensor(struct sk_buff *skb, const struct sk_buff *entskb,
+			    int attr_type)
+{
+	struct nfqnl_tensor_payload payload;
+
+	if (tensor_native_init_hdr_u32_2d(&payload.hdr, 1,
+					  NFQNL_TENSOR_FEATURES))
+		return -EINVAL;
+
+	nfqnl_tensor_fill(entskb, payload.data);
+
+	return nla_put(skb, attr_type, sizeof(payload), &payload);
+}
+
 static struct sk_buff *
 nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 			   struct nf_queue_entry *entry,
@@ -709,6 +783,11 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 		hlen = min_t(unsigned int, hlen, data_len);
 		size += sizeof(struct nlattr) + hlen;
 		cap_len = entskb->len;
+		break;
+
+	case NFQNL_COPY_TENSOR:
+		size += nla_total_size(sizeof(struct nfqnl_tensor_payload));
+		size += nla_total_size(sizeof(struct nfqnl_tensor_payload));
 		break;
 	}
 
@@ -896,6 +975,13 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 		nla->nla_len = nla_attr_size(data_len);
 
 		if (skb_zerocopy(skb, entskb, data_len, hlen))
+			goto nla_put_failure;
+	}
+
+	if (queue->copy_mode == NFQNL_COPY_TENSOR) {
+		if (nfqnl_put_tensor(skb, entskb, NFQA_TENSOR) < 0)
+			goto nla_put_failure;
+		if (nfqnl_put_tensor(skb, entskb, NFQA_PAYLOAD) < 0)
 			goto nla_put_failure;
 	}
 
@@ -1189,6 +1275,11 @@ nfqnl_set_mode(struct nfqnl_instance *queue,
 			queue->copy_range = NFQNL_MAX_COPY_RANGE;
 		else
 			queue->copy_range = range;
+		break;
+
+	case NFQNL_COPY_TENSOR:
+		queue->copy_mode = mode;
+		queue->copy_range = 0;
 		break;
 
 	default:

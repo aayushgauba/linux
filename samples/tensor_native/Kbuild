@@ -1,0 +1,2 @@
+# SPDX-License-Identifier: GPL-2.0
+obj-m := tensor_kernel_consumer.o tensor_net_producer.o

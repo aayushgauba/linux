@@ -51,6 +51,12 @@
 #include <net/netfilter/nf_nat_helper.h>
 #include <net/netns/hash.h>
 #include <net/ip.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/ipv6.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
+#include <trace/events/net.h>
 
 #include "nf_internals.h"
 
@@ -223,6 +229,73 @@ static u32 hash_conntrack_raw(const struct nf_conntrack_tuple *tuple,
 	return siphash((void *)tuple,
 			offsetofend(struct nf_conntrack_tuple, dst.__nfct_hash_offsetend),
 			&key);
+}
+
+static bool net_tensor_ct_fill(const struct sk_buff *skb, u32 features[8])
+{
+	unsigned int off;
+	u8 l4_proto = 0;
+	unsigned int l4_off = 0;
+
+	memset(features, 0, sizeof(u32) * 8);
+	if (!skb)
+		return false;
+
+	off = skb_network_offset(skb);
+
+	if (skb->protocol == htons(ETH_P_IP)) {
+		struct iphdr _iph, *iph;
+		unsigned int ihl;
+
+		iph = skb_header_pointer(skb, off, sizeof(_iph), &_iph);
+		if (!iph)
+			return false;
+		ihl = iph->ihl * 4u;
+		if (ihl < sizeof(*iph))
+			return false;
+
+		l4_proto = iph->protocol;
+		l4_off = off + ihl;
+		features[2] = iph->protocol;
+		features[3] = iph->ttl;
+		features[4] = ntohs(iph->tot_len);
+	} else if (skb->protocol == htons(ETH_P_IPV6)) {
+		struct ipv6hdr _ip6h, *ip6h;
+
+		ip6h = skb_header_pointer(skb, off, sizeof(_ip6h), &_ip6h);
+		if (!ip6h)
+			return false;
+
+		l4_proto = ip6h->nexthdr;
+		l4_off = off + sizeof(*ip6h);
+		features[2] = ip6h->nexthdr;
+		features[3] = ip6h->hop_limit;
+		features[4] = ntohs(ip6h->payload_len) + sizeof(*ip6h);
+	} else {
+		return false;
+	}
+
+	if (l4_proto == IPPROTO_TCP) {
+		struct tcphdr _tcph, *tcph;
+
+		tcph = skb_header_pointer(skb, l4_off, sizeof(_tcph), &_tcph);
+		if (!tcph)
+			return false;
+		features[0] = ntohs(tcph->source);
+		features[1] = ntohs(tcph->dest);
+		features[5] = tcph->syn ? 1 : 0;
+		features[6] = tcph->ack ? 1 : 0;
+	} else if (l4_proto == IPPROTO_UDP) {
+		struct udphdr _udph, *udph;
+
+		udph = skb_header_pointer(skb, l4_off, sizeof(_udph), &_udph);
+		if (!udph)
+			return false;
+		features[0] = ntohs(udph->source);
+		features[1] = ntohs(udph->dest);
+	}
+
+	return true;
 }
 
 static u32 scale_hash(u32 hash)
@@ -2006,6 +2079,7 @@ nf_conntrack_in(struct sk_buff *skb, const struct nf_hook_state *state)
 	struct nf_conn *ct, *tmpl;
 	u_int8_t protonum;
 	int dataoff, ret;
+	u32 features[8];
 
 	tmpl = nf_ct_get(skb, &ctinfo);
 	if (tmpl || ctinfo == IP_CT_UNTRACKED) {
@@ -2035,6 +2109,9 @@ nf_conntrack_in(struct sk_buff *skb, const struct nf_hook_state *state)
 		if (skb->_nfct)
 			goto out;
 	}
+
+	if (trace_net_tensor_ct_enabled() && net_tensor_ct_fill(skb, features))
+		trace_net_tensor_ct(skb, features, (u8)ctinfo);
 repeat:
 	ret = resolve_normal_ct(tmpl, skb, dataoff,
 				protonum, state);

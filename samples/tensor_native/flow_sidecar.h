@@ -1,0 +1,24 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _SAMPLES_FLOW_SIDECAR_H
+#define _SAMPLES_FLOW_SIDECAR_H
+
+#define FLOW_FEATURES 10u
+
+enum flow_feature_index {
+	FLOW_F_SRC_IP = 0,
+	FLOW_F_DST_IP = 1,
+	FLOW_F_SRC_PORT = 2,
+	FLOW_F_DST_PORT = 3,
+	FLOW_F_PROTO = 4,
+	FLOW_F_PACKETS = 5,
+	FLOW_F_BYTES = 6,
+	FLOW_F_TCP_FLAGS = 7,
+	FLOW_F_AGE_MS = 8,
+	FLOW_F_STATE = 9,
+};
+
+#define FLOW_ACTION_ALLOW 0u
+#define FLOW_ACTION_SLOWPATH 1u
+#define FLOW_ACTION_DROP 2u
+
+#endif
